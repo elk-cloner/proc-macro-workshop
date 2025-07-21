@@ -1,0 +1,28 @@
+{
+  "name": "Rust Proc-Macro Workshop",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  
+  // Configure tool-specific properties.
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer"
+      ],
+      "settings": {
+        "rust-analyzer.procMacro.enable": true,
+        "[rust]": {
+          "editor.defaultFormatter": "rust-lang.rust-analyzer",
+          "editor.formatOnSave": true
+        }
+      }
+    }
+  },
+
+  // Use 'postCreateCommand' to run commands after the container is created.
+  "postCreateCommand": "cargo check --workspace",
+
+  // Run as root for learning environment with full access
+  "remoteUser": "root"
+}

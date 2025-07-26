@@ -5,7 +5,9 @@
             "label": "Build",
             "type": "shell",
             "command": "cargo",
-            "args": ["build"],
+            "args": [
+                "build"
+            ],
             "group": "build",
             "presentation": {
                 "echo": true,
@@ -18,7 +20,9 @@
             "label": "Test",
             "type": "shell",
             "command": "cargo",
-            "args": ["test"],
+            "args": [
+                "test"
+            ],
             "group": "test",
             "presentation": {
                 "echo": true,
@@ -31,7 +35,9 @@
             "label": "Format",
             "type": "shell",
             "command": "cargo",
-            "args": ["fmt"],
+            "args": [
+                "fmt"
+            ],
             "group": "build",
             "presentation": {
                 "echo": true,

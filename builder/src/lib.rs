@@ -1,10 +1,10 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, DeriveInput};
+use syn::{parse_macro_input, DeriveInput, Field, Type};
 
-fn extract_option_type(f: &syn::Field) -> Option<&syn::Type> {
-    let path = match &f.ty {
-        syn::Type::Path(type_path) => &type_path.path,
+fn extract_option_inner_type(field: &Field) -> Option<&Type> {
+    let path = match &field.ty {
+        Type::Path(type_path) => &type_path.path,
         _ => return None,
     };
 
@@ -24,97 +24,119 @@ fn extract_option_type(f: &syn::Field) -> Option<&syn::Type> {
     }
 }
 
+fn is_option_type(field: &Field) -> bool {
+    extract_option_inner_type(field).is_some()
+}
+
+fn generate_builder_field(field: &Field) -> proc_macro2::TokenStream {
+    let name = &field.ident;
+    let ty = &field.ty;
+
+    if is_option_type(field) {
+        quote! { #name: #ty }
+    } else {
+        quote! { #name: ::std::option::Option<#ty> }
+    }
+}
+
+fn generate_setter_method(field: &Field) -> proc_macro2::TokenStream {
+    let name = &field.ident;
+
+    if let Some(inner_ty) = extract_option_inner_type(field) {
+        // For Option<T> fields, setter takes T
+        quote! {
+            pub fn #name(&mut self, #name: #inner_ty) -> &mut Self {
+                self.#name = ::std::option::Option::Some(#name);
+                self
+            }
+        }
+    } else {
+        // For T fields, setter takes T
+        let ty = &field.ty;
+        quote! {
+            pub fn #name(&mut self, #name: #ty) -> &mut Self {
+                self.#name = ::std::option::Option::Some(#name);
+                self
+            }
+        }
+    }
+}
+
+fn generate_build_field(field: &Field) -> proc_macro2::TokenStream {
+    let name = &field.ident;
+
+    if is_option_type(field) {
+        // Optional fields: use the Option value directly
+        quote! {
+            #name: self.#name.clone()
+        }
+    } else {
+        // Required fields: unwrap with error message
+        quote! {
+            #name: self.#name.clone()
+                .ok_or_else(|| ::std::boxed::Box::<dyn ::std::error::Error>::from(
+                    ::std::format!("field `{}` is not set", ::std::stringify!(#name))
+                ))?
+        }
+    }
+}
+
+fn generate_empty_field(field: &Field) -> proc_macro2::TokenStream {
+    let name = &field.ident;
+    quote! { #name: ::std::option::Option::None }
+}
+
 #[proc_macro_derive(Builder)]
 pub fn derive(input: TokenStream) -> TokenStream {
     let ast = parse_macro_input!(input as DeriveInput);
-    let name = &ast.ident;
-    let bname = format!("{}Builder", name);
-    let bident = syn::Ident::new(&bname, name.span());
-    let fields = if let syn::Data::Struct(syn::DataStruct {
-        fields: syn::Fields::Named(syn::FieldsNamed { ref named, .. }),
-        ..
-    }) = ast.data
-    {
-        named
-    } else {
-        unimplemented!();
+    let struct_name = &ast.ident;
+    let builder_name = syn::Ident::new(&format!("{}Builder", struct_name), struct_name.span());
+
+    // Extract named fields from struct
+    let fields = match &ast.data {
+        syn::Data::Struct(syn::DataStruct {
+            fields: syn::Fields::Named(syn::FieldsNamed { named, .. }),
+            ..
+        }) => named,
+        _ => {
+            return syn::Error::new_spanned(
+                &ast,
+                "Builder can only be derived for structs with named fields",
+            )
+            .to_compile_error()
+            .into();
+        }
     };
 
-    let ty_is_option = |f: &syn::Field| {
-        if let syn::Type::Path(ref p) = f.ty {
-            return p.path.segments.len() == 1 && p.path.segments[0].ident == "Option";
-        }
-        false
-    };
-
-    let optionized = fields.iter().map(|f| {
-        let name = &f.ident;
-        let ty = &f.ty;
-        if ty_is_option(&f) {
-            quote! { #name: #ty }
-        } else {
-            quote! { #name: std::option::Option<#ty> }
-        }
-    });
-
-    let methods = fields.iter().map(|f| {
-        let name = &f.ident;
-        let ty = &f.ty;
-        if ty_is_option(&f) {
-            let inner_ty = extract_option_type(&f);
-            quote! {
-                pub fn #name(&mut self, #name: #inner_ty) -> &mut Self{
-                    self.#name = Some(#name);
-                    self
-                }
-            }
-        } else {
-            quote! {
-                pub fn #name(&mut self, #name: #ty) -> &mut Self{
-                    self.#name = Some(#name);
-                    self
-                }
-            }
-        }
-    });
-
-    let build_fields = fields.iter().map(|f| {
-        let name = &f.ident;
-        if ty_is_option(&f) {
-            quote! {
-                #name: self.#name.clone()
-            }
-        } else {
-            quote! {
-                #name: self.#name.clone().ok_or(concat!(stringify!(#name), "is not set"))?
-            }
-        }
-    });
-
-    let build_empty = fields.iter().map(|f| {
-        let name = &f.ident;
-        quote! { #name: None }
-    });
+    // Generate code sections
+    let builder_fields = fields.iter().map(generate_builder_field);
+    let setter_methods = fields.iter().map(generate_setter_method);
+    let build_fields = fields.iter().map(generate_build_field);
+    let empty_fields = fields.iter().map(generate_empty_field);
 
     let expanded = quote! {
-        struct #bident {
-            #(#optionized,)*
+        pub struct #builder_name {
+            #(#builder_fields,)*
         }
-        impl #bident {
-            #(#methods)*
-            pub fn build(&mut self) -> Result<#name, Box<dyn std::error::Error>> {
-                Ok(#name {
+
+        impl #builder_name {
+            #(#setter_methods)*
+
+            pub fn build(&mut self) -> ::std::result::Result<#struct_name, ::std::boxed::Box<dyn ::std::error::Error>> {
+                ::std::result::Result::Ok(#struct_name {
                     #(#build_fields,)*
                 })
             }
         }
-        impl #name {
-            fn builder() -> #bident {
-                #bident{
-                    #(#build_empty,)*
+
+        impl #struct_name {
+            pub fn builder() -> #builder_name {
+                #builder_name {
+                    #(#empty_fields,)*
                 }
             }
         }
     };
+
     expanded.into()
 }

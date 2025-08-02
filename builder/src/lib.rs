@@ -3,9 +3,6 @@ use quote::quote;
 use syn::{parse2, parse_macro_input, spanned::Spanned, DeriveInput, Field, Type};
 
 fn extract_inner_type<'a>(field: &'a Field, ident_type: &str) -> Option<&'a Type> {
-    if ident_type == "Vec" {
-        eprintln!("field: {:#?}", field);
-    }
     let path = match &field.ty {
         Type::Path(type_path) => &type_path.path,
         _ => return None,
@@ -77,50 +74,31 @@ impl syn::parse::Parse for EachAttr {
 
 fn generate_setter_method(field: &Field) -> proc_macro2::TokenStream {
     let name = &field.ident;
-    // pub fn arg(value: string) -> Self
 
     if let Some(inner_ty) = extract_inner_type(&field, "Option") {
-        // For Option<T> fields, setter takes T
         quote! {
             pub fn #name(&mut self, #name: #inner_ty) -> &mut Self {
-                self.#name = ::std::option::Option::Some(#name);
+                self.#name = Some(#name);
+                self
+            }
+        }
+    } else if let Some(each_attr) = get_each_attribute_clean(&field) {
+        let each_method = syn::Ident::new(&each_attr, field.span());
+        let inner_type =
+            extract_inner_type(&field, "Vec").expect("fields with 'each' attribute must be Vec<T>");
+
+        quote! {
+            pub fn #each_method(&mut self, #each_method: #inner_type) -> &mut Self {
+                self.#name.get_or_insert_with(Vec::new).push(#each_method);
                 self
             }
         }
     } else {
-        // For T fields, setter takes T
         let ty = &field.ty;
-        match get_each_attribute_clean(&field) {
-            Some(each_attr) => {
-                let each_attr = syn::Ident::new(&each_attr, field.span());
-                let inner_type =
-                    extract_inner_type(&field, "Vec").expect("Can't extract vectro type");
-                // println!(
-                //     "HERE IS THE INNER VECTOR TYPE: {:?} {:?} {:?}",
-                //     inner_type, each_attr, name
-                // );
-                quote! {
-                    pub fn #each_attr(&mut self, #each_attr: #inner_type) -> &mut Self {
-                        match self.#name {
-                            Some(ref mut v) => {
-                                v.push(#each_attr);
-                                self
-                            }
-                            _ => {
-                                self.#name = Some(vec![#each_attr]);
-                                self
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {
-                quote! {
-                    pub fn #name(&mut self, #name: #ty) -> &mut Self {
-                        self.#name = ::std::option::Option::Some(#name);
-                        self
-                    }
-                }
+        quote! {
+            pub fn #name(&mut self, #name: #ty) -> &mut Self {
+                self.#name = Some(#name);
+                self
             }
         }
     }
@@ -137,7 +115,7 @@ fn generate_build_field(field: &Field) -> proc_macro2::TokenStream {
     } else {
         // Required fields: unwrap with error message
         match get_each_attribute_clean(&field) {
-            Some(each_attr) => {
+            Some(_) => {
                 quote! {
                     #name: self.#name.clone().unwrap_or_default()
                 }

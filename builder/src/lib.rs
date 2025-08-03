@@ -39,18 +39,16 @@ fn generate_builder_field(field: &Field) -> proc_macro2::TokenStream {
     }
 }
 
-fn get_each_attribute_clean(field: &Field) -> Option<String> {
+fn get_each_attribute_clean(field: &Field) -> syn::Result<Option<String>> {
     for attr in &field.attrs {
         let list = match &attr.meta {
             syn::Meta::List(list) if list.path.is_ident("builder") => list,
             _ => continue,
         };
-        let parsed: syn::Result<EachAttr> = parse2(list.tokens.clone());
-        if let Ok(each_attr) = parsed {
-            return Some(each_attr.value);
-        }
+        let each_attr: EachAttr = parse2(list.tokens.clone())?;
+        return Ok(Some(each_attr.value));
     }
-    None
+    Ok(None)
 }
 
 struct EachAttr {
@@ -72,62 +70,58 @@ impl syn::parse::Parse for EachAttr {
     }
 }
 
-fn generate_setter_method(field: &Field) -> proc_macro2::TokenStream {
+fn generate_setter_method(field: &Field) -> syn::Result<proc_macro2::TokenStream> {
     let name = &field.ident;
 
     if let Some(inner_ty) = extract_inner_type(&field, "Option") {
-        quote! {
+        Ok(quote! {
             pub fn #name(&mut self, #name: #inner_ty) -> &mut Self {
                 self.#name = Some(#name);
                 self
             }
-        }
-    } else if let Some(each_attr) = get_each_attribute_clean(&field) {
+        })
+    } else if let Some(each_attr) = get_each_attribute_clean(&field)? {
         let each_method = syn::Ident::new(&each_attr, field.span());
         let inner_type =
             extract_inner_type(&field, "Vec").expect("fields with 'each' attribute must be Vec<T>");
 
-        quote! {
+        Ok(quote! {
             pub fn #each_method(&mut self, #each_method: #inner_type) -> &mut Self {
                 self.#name.get_or_insert_with(Vec::new).push(#each_method);
                 self
             }
-        }
+        })
     } else {
         let ty = &field.ty;
-        quote! {
+        Ok(quote! {
             pub fn #name(&mut self, #name: #ty) -> &mut Self {
                 self.#name = Some(#name);
                 self
             }
-        }
+        })
     }
 }
 
-fn generate_build_field(field: &Field) -> proc_macro2::TokenStream {
+fn generate_build_field(field: &Field) -> syn::Result<proc_macro2::TokenStream> {
     let name = &field.ident;
 
     if is_option_type(field) {
         // Optional fields: use the Option value directly
-        quote! {
+        Ok(quote! {
             #name: self.#name.clone()
-        }
+        })
     } else {
         // Required fields: unwrap with error message
-        match get_each_attribute_clean(&field) {
-            Some(_) => {
-                quote! {
-                    #name: self.#name.clone().unwrap_or_default()
-                }
-            }
-            _ => {
-                quote! {
-                    #name: self.#name.clone()
-                        .ok_or_else(|| ::std::boxed::Box::<dyn ::std::error::Error>::from(
-                            ::std::format!("field `{}` is not set", ::std::stringify!(#name))
-                        ))?
-                }
-            }
+        match get_each_attribute_clean(&field)? {
+            Some(_) => Ok(quote! {
+                #name: self.#name.clone().unwrap_or_default()
+            }),
+            _ => Ok(quote! {
+                #name: self.#name.clone()
+                    .ok_or_else(|| ::std::boxed::Box::<dyn ::std::error::Error>::from(
+                        ::std::format!("field `{}` is not set", ::std::stringify!(#name))
+                    ))?
+            }),
         }
     }
 }
@@ -140,6 +134,14 @@ fn generate_empty_field(field: &Field) -> proc_macro2::TokenStream {
 #[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive(input: TokenStream) -> TokenStream {
     let ast = parse_macro_input!(input as DeriveInput);
+
+    match derive_impl(ast) {
+        Ok(tokens) => tokens,
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+fn derive_impl(ast: DeriveInput) -> syn::Result<TokenStream> {
     let struct_name = &ast.ident;
     let builder_name = syn::Ident::new(&format!("{}Builder", struct_name), struct_name.span());
     // println!("{:#?}", ast);
@@ -151,19 +153,19 @@ pub fn derive(input: TokenStream) -> TokenStream {
             ..
         }) => named,
         _ => {
-            return syn::Error::new_spanned(
+            return Err(syn::Error::new_spanned(
                 &ast,
                 "Builder can only be derived for structs with named fields",
-            )
-            .to_compile_error()
-            .into();
+            ));
         }
     };
 
     // Generate code sections
     let builder_fields = fields.iter().map(generate_builder_field);
-    let setter_methods = fields.iter().map(generate_setter_method);
-    let build_fields = fields.iter().map(generate_build_field);
+    let setter_methods: syn::Result<Vec<_>> = fields.iter().map(generate_setter_method).collect();
+    let setter_methods = setter_methods?;
+    let build_fields: syn::Result<Vec<_>> = fields.iter().map(generate_build_field).collect();
+    let build_fields = build_fields?;
     let empty_fields = fields.iter().map(generate_empty_field);
 
     let expanded = quote! {
@@ -190,5 +192,5 @@ pub fn derive(input: TokenStream) -> TokenStream {
         }
     };
 
-    expanded.into()
+    Ok(expanded.into())
 }

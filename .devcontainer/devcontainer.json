@@ -8,7 +8,8 @@
         "vscode": {
             "extensions": [
                 "rust-lang.rust-analyzer",
-                "vadimcn.vscode-lldb"
+                "vadimcn.vscode-lldb",
+                "eamodio.gitlens"
             ],
             "settings": {
                 "rust-analyzer.procMacro.enable": true,

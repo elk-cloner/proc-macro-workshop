@@ -3,33 +3,28 @@ use quote::quote;
 
 use syn::{parse_macro_input, DeriveInput};
 
-fn get_debug_attribute(field: &syn::Field) -> Option<proc_macro2::Literal> {
-    let attr = if field.attrs.len() != 0 {
-        &field.attrs[0]
-    } else {
-        return None;
-    };
-
-    let meta = match &attr.meta {
-        syn::Meta::NameValue(meta) => meta,
-        _ => {
-            return None;
+fn get_debug_attribute(field: &syn::Field) -> syn::Result<Option<proc_macro2::Literal>> {
+    for attr in &field.attrs {
+        if let syn::Meta::NameValue(meta) = &attr.meta {
+            if meta.path.is_ident("debug") {
+                match &meta.value {
+                    syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(s),
+                        ..
+                    }) => {
+                        return Ok(Some(s.token()));
+                    }
+                    _ => {
+                        return Err(syn::Error::new_spanned(
+                            &meta.value,
+                            "debug attribute must be a string literal",
+                        ))
+                    }
+                }
+            }
         }
-    };
-
-    let meta_value = if meta.path.segments.len() > 0 && meta.path.segments[0].ident == "debug" {
-        &meta.value
-    } else {
-        return None;
-    };
-
-    match &meta_value {
-        syn::Expr::Lit(syn::ExprLit {
-            lit: syn::Lit::Str(str),
-            ..
-        }) => Some(str.token()),
-        _ => None,
     }
+    Ok(None)
 }
 
 #[proc_macro_derive(CustomDebug, attributes(debug))]
@@ -57,11 +52,15 @@ pub fn derive(input: TokenStream) -> TokenStream {
         let f_name = &field.ident;
 
         match get_debug_attribute(field) {
-            Some(format_string) => {
+            Ok(Some(format_string)) => {
                 quote! { .field(stringify!(#f_name), &format_args!(#format_string, &self.#f_name))}
             }
-            _ => {
+            Ok(None) => {
                 quote! { .field(stringify!(#f_name), &self.#f_name)}
+            }
+            Err(err) => {
+                // Return error as compile_error! token
+                err.to_compile_error()
             }
         }
     });

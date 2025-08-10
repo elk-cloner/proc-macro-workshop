@@ -1,5 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
+use std::collections::HashSet;
 
 use syn::{parse_macro_input, DeriveInput};
 
@@ -27,14 +28,53 @@ fn get_debug_attribute(field: &syn::Field) -> syn::Result<Option<proc_macro2::Li
     Ok(None)
 }
 
-fn generate_debug_bounds(param: &syn::GenericParam) -> Option<proc_macro2::TokenStream> {
+fn generate_debug_bounds(
+    param: &syn::GenericParam,
+    phantomdata_generics: &HashSet<String>,
+) -> Option<proc_macro2::TokenStream> {
     match param {
         syn::GenericParam::Type(type_param) => {
             let ident = &type_param.ident;
-            return Some(quote! {#ident: ::std::fmt::Debug});
+            if phantomdata_generics.contains(&ident.to_string()) {
+                return None;
+            } else {
+                return Some(quote! {#ident: ::std::fmt::Debug});
+            }
         }
         _ => None,
     }
+}
+
+fn extract_phantom_generics(field: &syn::Field) -> Option<HashSet<String>> {
+    let path = match &field.ty {
+        syn::Type::Path(type_path) => &type_path.path,
+        _ => return None,
+    };
+
+    let segment = path.segments.first()?;
+    if segment.ident != "PhantomData" {
+        return None;
+    }
+
+    let args = match &segment.arguments {
+        syn::PathArguments::AngleBracketed(arguments) => &arguments.args,
+        _ => {
+            return None;
+        }
+    };
+
+    let mut phantom_types = HashSet::new();
+    for arg in args.iter() {
+        match arg {
+            syn::GenericArgument::Type(syn::Type::Path(syn::TypePath { path, .. })) => {
+                if let Some(ident) = path.get_ident() {
+                    phantom_types.insert(ident.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    return Some(phantom_types);
 }
 
 #[proc_macro_derive(CustomDebug, attributes(debug))]
@@ -77,11 +117,17 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     let (impl_generics, ty_generics, where_clause) = ast.generics.split_for_impl();
 
+    let phantomdata_generics: HashSet<String> = fields
+        .iter()
+        .filter_map(extract_phantom_generics)
+        .flatten()
+        .collect();
+
     let debug_bounds: Vec<_> = ast
         .generics
         .params
         .iter()
-        .filter_map(generate_debug_bounds)
+        .filter_map(|param| generate_debug_bounds(param, &phantomdata_generics))
         .collect();
 
     let expanded = quote! {

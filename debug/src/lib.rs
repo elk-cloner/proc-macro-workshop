@@ -5,76 +5,80 @@ use std::collections::HashSet;
 use syn::{parse_macro_input, DeriveInput};
 
 fn get_debug_attribute(field: &syn::Field) -> syn::Result<Option<proc_macro2::Literal>> {
+    let mut debug_attr = None;
+
     for attr in &field.attrs {
-        if let syn::Meta::NameValue(meta) = &attr.meta {
-            if meta.path.is_ident("debug") {
-                match &meta.value {
-                    syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(s),
-                        ..
-                    }) => {
-                        return Ok(Some(s.token()));
-                    }
-                    _ => {
-                        return Err(syn::Error::new_spanned(
-                            &meta.value,
-                            "debug attribute must be a string literal",
-                        ))
-                    }
-                }
-            }
+        let meta = match &attr.meta {
+            syn::Meta::NameValue(meta) if meta.path.is_ident("debug") => meta,
+            _ => continue,
+        };
+
+        if debug_attr.is_some() {
+            return Err(syn::Error::new_spanned(
+                attr,
+                "duplicate #[debug] attribute",
+            ));
         }
+
+        let string_literal = match &meta.value {
+            syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(s),
+                ..
+            }) => s,
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    &meta.value,
+                    "debug attribute value must be a string literal",
+                ))
+            }
+        };
+        debug_attr = Some(string_literal.token());
     }
-    Ok(None)
+
+    Ok(debug_attr)
 }
 
 fn generate_debug_bounds(
     param: &syn::GenericParam,
-    phantomdata_generics: &HashSet<String>,
+    phantom_only_types: &HashSet<&syn::Ident>,
 ) -> Option<proc_macro2::TokenStream> {
-    match param {
-        syn::GenericParam::Type(type_param) => {
-            let ident = &type_param.ident;
-            if phantomdata_generics.contains(&ident.to_string()) {
-                return None;
-            } else {
-                return Some(quote! {#ident: ::std::fmt::Debug});
-            }
-        }
-        _ => None,
-    }
-}
-
-fn extract_phantom_generics(field: &syn::Field) -> Option<HashSet<String>> {
-    let path = match &field.ty {
-        syn::Type::Path(type_path) => &type_path.path,
+    let type_param = match param {
+        syn::GenericParam::Type(tp) => tp,
         _ => return None,
     };
 
-    let segment = path.segments.first()?;
-    if segment.ident != "PhantomData" {
+    if phantom_only_types.contains(&type_param.ident) {
         return None;
     }
 
-    let args = match &segment.arguments {
-        syn::PathArguments::AngleBracketed(arguments) => &arguments.args,
-        _ => {
-            return None;
-        }
+    let ident = &type_param.ident;
+    Some(quote! { #ident: ::std::fmt::Debug })
+}
+
+fn extract_phantom_type_params(field: &syn::Field) -> Vec<&syn::Ident> {
+    let syn::Type::Path(type_path) = &field.ty else {
+        return Vec::new();
     };
 
-    let mut phantom_types = HashSet::new();
-    for arg in args.iter() {
-        match arg {
-            syn::GenericArgument::Type(syn::Type::Path(syn::TypePath { path, .. })) => {
-                if let Some(ident) = path.get_ident() {
-                    phantom_types.insert(ident.to_string());
-                }
-            }
-            _ => {}
-        }
+    let Some(last_segment) = type_path.path.segments.last() else {
+        return Vec::new();
+    };
+
+    if last_segment.ident != "PhantomData" {
+        return Vec::new();
     }
-    return Some(phantom_types);
+
+    let syn::PathArguments::AngleBracketed(args) = &last_segment.arguments else {
+        return Vec::new();
+    };
+
+    args.args
+        .iter()
+        .filter_map(|arg| match arg {
+            syn::GenericArgument::Type(syn::Type::Path(tp)) => tp.path.get_ident(),
+            _ => None,
+        })
+        .collect()
 }
 
 #[proc_macro_derive(CustomDebug, attributes(debug))]
@@ -117,17 +121,16 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     let (impl_generics, ty_generics, where_clause) = ast.generics.split_for_impl();
 
-    let phantomdata_generics: HashSet<String> = fields
+    let phantom_only_types: HashSet<&syn::Ident> = fields
         .iter()
-        .filter_map(extract_phantom_generics)
-        .flatten()
+        .flat_map(extract_phantom_type_params)
         .collect();
 
     let debug_bounds: Vec<_> = ast
         .generics
         .params
         .iter()
-        .filter_map(|param| generate_debug_bounds(param, &phantomdata_generics))
+        .filter_map(|param| generate_debug_bounds(param, &phantom_only_types))
         .collect();
 
     let expanded = quote! {

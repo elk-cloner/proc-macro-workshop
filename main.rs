@@ -1,26 +1,29 @@
 use derive_debug::CustomDebug;
 use std::fmt::Debug;
-use std::marker::PhantomData;
 
-type S = String;
+pub trait Trait {
+    type Value;
+}
 
 #[derive(CustomDebug)]
-pub struct Field<T> {
-    marker: PhantomData<T>,
-    string: S,
-    #[debug = "0b{:08b}"]
-    bitmask: u8,
+#[debug(bound = "T::Value: Debug")]
+pub struct Wrapper<T: Trait> {
+    field: Field<T>,
+}
+
+#[derive(CustomDebug)]
+struct Field<T: Trait> {
+    values: Vec<T::Value>,
 }
 
 fn assert_debug<F: Debug>() {}
-
 fn main() {
-    // let f = Field {
-    //     name: "F",
-    //     bitmask: 0b00011100,
-    // };
+    // // Does not implement Debug, but its associated type does.
+    // struct Id;
 
-    // let debug = format!("{:?}", f);
+    // impl Trait for Id {
+    //     type Value = u8;
+    // }
 
-    // assert!(debug.starts_with(r#"Field { name: "F","#));
+    // assert_debug::<Field<Id>>();
 }

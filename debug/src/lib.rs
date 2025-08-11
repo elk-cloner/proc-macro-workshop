@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use syn::{parse_macro_input, DeriveInput};
 
@@ -41,6 +41,7 @@ fn get_debug_attribute(field: &syn::Field) -> syn::Result<Option<proc_macro2::Li
 fn generate_debug_bounds(
     param: &syn::GenericParam,
     phantom_only_types: &HashSet<&syn::Ident>,
+    associated_types: &HashMap<&syn::Ident, &syn::Ident>,
 ) -> Option<proc_macro2::TokenStream> {
     let type_param = match param {
         syn::GenericParam::Type(tp) => tp,
@@ -52,7 +53,10 @@ fn generate_debug_bounds(
     }
 
     let ident = &type_param.ident;
-    Some(quote! { #ident: ::std::fmt::Debug })
+    match associated_types.get(ident) {
+        Some(value) => Some(quote! { #ident::#value: ::std::fmt::Debug }),
+        _ => Some(quote! { #ident: ::std::fmt::Debug }),
+    }
 }
 
 fn extract_phantom_type_params(field: &syn::Field) -> Vec<&syn::Ident> {
@@ -79,6 +83,37 @@ fn extract_phantom_type_params(field: &syn::Field) -> Vec<&syn::Ident> {
             _ => None,
         })
         .collect()
+}
+
+fn get_associated_types(field: &syn::Field) -> HashMap<&syn::Ident, &syn::Ident> {
+    let syn::Type::Path(type_path) = &field.ty else {
+        return HashMap::new();
+    };
+
+    let Some(segment) = type_path.path.segments.last() else {
+        return HashMap::new();
+    };
+
+    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return HashMap::new();
+    };
+
+    let Some(arg) = arguments.args.last() else {
+        return HashMap::new();
+    };
+
+    let syn::GenericArgument::Type(syn::Type::Path(syn::TypePath { path, .. })) = arg else {
+        return HashMap::new();
+    };
+
+    let Some(key) = path.segments.first() else {
+        return HashMap::new();
+    };
+    let Some(value) = path.segments.last() else {
+        return HashMap::new();
+    };
+
+    HashMap::from([(&key.ident, &value.ident)])
 }
 
 #[proc_macro_derive(CustomDebug, attributes(debug))]
@@ -121,6 +156,8 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     let (impl_generics, ty_generics, where_clause) = ast.generics.split_for_impl();
 
+    let associated_types = fields.iter().flat_map(get_associated_types).collect();
+
     let phantom_only_types: HashSet<&syn::Ident> = fields
         .iter()
         .flat_map(extract_phantom_type_params)
@@ -130,8 +167,10 @@ pub fn derive(input: TokenStream) -> TokenStream {
         .generics
         .params
         .iter()
-        .filter_map(|param| generate_debug_bounds(param, &phantom_only_types))
+        .filter_map(|param| generate_debug_bounds(param, &phantom_only_types, &associated_types))
         .collect();
+
+    println!("ast: {:#?}", ast);
 
     let expanded = quote! {
         impl #impl_generics ::std::fmt::Debug for #struct_name #ty_generics

@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 use quote::quote;
 use std::collections::{HashMap, HashSet};
-
+use syn::parse::Parse;
 use syn::{parse_macro_input, DeriveInput};
 
 fn get_debug_attribute(field: &syn::Field) -> syn::Result<Option<proc_macro2::Literal>> {
@@ -116,10 +116,60 @@ fn get_associated_types(field: &syn::Field) -> HashMap<&syn::Ident, &syn::Ident>
     HashMap::from([(&key.ident, &value.ident)])
 }
 
+struct BoundAttr {
+    value: String,
+}
+
+impl Parse for BoundAttr {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let _bound: syn::Ident = input.parse()?;
+        let _eq: syn::Token![=] = input.parse()?;
+        let value: syn::LitStr = input.parse()?;
+
+        Ok(BoundAttr {
+            value: value.value(),
+        })
+    }
+}
+
+fn get_manual_bounds(ast: &DeriveInput) -> syn::Result<Option<syn::WhereClause>> {
+    for attr in &ast.attrs {
+        if attr.path().is_ident("debug") {
+            let bound_attr: BoundAttr = attr.parse_args()?;
+            let where_clause: syn::WhereClause =
+                syn::parse_str(&format!("where {}", bound_attr.value))?;
+            return Ok(Some(where_clause));
+        }
+    }
+    Ok(None)
+}
+
+fn extract_type_params_from_manual_bounds(
+    manual_bounds: &syn::WhereClause,
+) -> HashSet<&syn::Ident> {
+    let mut covered_types = HashSet::new();
+
+    for predicate in &manual_bounds.predicates {
+        if let syn::WherePredicate::Type(type_predicate) = predicate {
+            if let syn::Type::Path(type_path) = &type_predicate.bounded_ty {
+                if let Some(first_segment) = type_path.path.segments.first() {
+                    covered_types.insert(&first_segment.ident);
+                }
+            }
+        }
+    }
+
+    covered_types
+}
+
 #[proc_macro_derive(CustomDebug, attributes(debug))]
 pub fn derive(input: TokenStream) -> TokenStream {
     let ast = parse_macro_input!(input as DeriveInput);
-    // println!("{:#?}", ast);
+
+    let manual_bounds = match get_manual_bounds(&ast) {
+        Ok(bounds) => bounds,
+        Err(err) => return err.to_compile_error().into(),
+    };
 
     let struct_name = &ast.ident;
     let fields = match &ast.data {
@@ -147,35 +197,48 @@ pub fn derive(input: TokenStream) -> TokenStream {
             Ok(None) => {
                 quote! { .field(stringify!(#f_name), &self.#f_name)}
             }
-            Err(err) => {
-                // Return error as compile_error! token
-                err.to_compile_error()
-            }
+            Err(err) => err.to_compile_error(),
         }
     });
 
     let (impl_generics, ty_generics, where_clause) = ast.generics.split_for_impl();
 
-    let associated_types = fields.iter().flat_map(get_associated_types).collect();
+    let manually_bounded_types = manual_bounds
+        .as_ref()
+        .map(extract_type_params_from_manual_bounds)
+        .unwrap_or_default();
 
+    let associated_types = fields.iter().flat_map(get_associated_types).collect();
     let phantom_only_types: HashSet<&syn::Ident> = fields
         .iter()
         .flat_map(extract_phantom_type_params)
         .collect();
 
-    let debug_bounds: Vec<_> = ast
+    let auto_bounds: Vec<_> = ast
         .generics
         .params
         .iter()
-        .filter_map(|param| generate_debug_bounds(param, &phantom_only_types, &associated_types))
+        .filter_map(|param| {
+            if let syn::GenericParam::Type(type_param) = param {
+                if manually_bounded_types.contains(&type_param.ident) {
+                    return None;
+                }
+            }
+            generate_debug_bounds(param, &phantom_only_types, &associated_types)
+        })
         .collect();
 
-    println!("ast: {:#?}", ast);
+    let manual_predicates = manual_bounds
+        .as_ref()
+        .map(|mb| &mb.predicates)
+        .into_iter()
+        .flatten();
 
     let expanded = quote! {
         impl #impl_generics ::std::fmt::Debug for #struct_name #ty_generics
         where
-            #(#debug_bounds,)*
+            #(#auto_bounds,)*
+            #(#manual_predicates,)*
             #where_clause
         {
             fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {

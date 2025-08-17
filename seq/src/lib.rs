@@ -27,7 +27,7 @@ impl Parse for SeqMacroInput {
             false
         };
         let range_end: syn::LitInt = input.parse()?;
-        println!("{:?}", range_end);
+        // println!("{:?}", range_end);
         let content;
         syn::braced!(content in input );
         let body: TokenStream2 = content.parse()?;
@@ -45,6 +45,6 @@ impl Parse for SeqMacroInput {
 #[proc_macro]
 pub fn seq(input: TokenStream) -> TokenStream {
     let ast = parse_macro_input!(input as SeqMacroInput);
-    println!("{:#?}", ast);
+    // println!("{:#?}", ast);
     quote! { /* .. */}.into()
 }

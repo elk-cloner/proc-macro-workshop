@@ -1,7 +1,7 @@
 use seq::seq;
 
-seq!(N in 0..8 {
-    // nothing
+seq!(N in 0..4 {
+    compile_error!(concat!("error number ", stringify!(N)));
 });
 
 fn main() {}

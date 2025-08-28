@@ -37,7 +37,6 @@ impl Parse for SeqMacroInput {
         let content;
         syn::braced!(content in input );
         let body: TokenStream2 = content.parse()?;
-        // println!("{:?}", body);
 
         Ok(SeqMacroInput {
             var,
@@ -93,30 +92,63 @@ fn find_and_replace_n(input: TokenStream2, n_value: u8) -> TokenStream2 {
         };
     }
 
-    return token_stream;
+    token_stream
+}
+
+fn find_and_replace_repetition(input: TokenStream2, start: u8, end: u8) -> (TokenStream2, bool) {
+    let input: Vec<proc_macro2::TokenTree> = input.into_iter().collect();
+    let mut token_stream = TokenStream2::new();
+
+    let mut i = 0;
+    let mut flag = false;
+    while i < input.len() {
+        if i + 2 < input.len()
+            && let proc_macro2::TokenTree::Punct(sharp) = &input[i]
+            && sharp.to_string() == "#"
+            && let proc_macro2::TokenTree::Group(group) = &input[i + 1]
+            && group.delimiter() == proc_macro2::Delimiter::Parenthesis
+            && let proc_macro2::TokenTree::Punct(star) = &input[i + 2]
+            && star.to_string() == "*"
+        {
+            for i in start..end {
+                let c = find_and_replace_n(group.stream(), i);
+                token_stream.extend(c);
+            }
+            flag = true;
+            i += 3;
+        } else if let proc_macro2::TokenTree::Group(group) = &input[i] {
+            let (c, f) = find_and_replace_repetition(group.stream(), start, end);
+            flag |= f;
+            let c = proc_macro2::TokenTree::Group(proc_macro2::Group::new(group.delimiter(), c));
+            token_stream.append(c);
+            i += 1;
+        } else {
+            token_stream.append(input[i].clone());
+            i += 1;
+        }
+    }
+    (token_stream, flag)
 }
 
 #[proc_macro]
 pub fn seq(input: TokenStream) -> TokenStream {
     let user_macro = parse_macro_input!(input as SeqMacroInput);
-    // println!("{:#?}", user_macro);
+
     let s: u8 = user_macro.range_start.base10_parse().unwrap();
     let e: u8 = user_macro.range_end.base10_parse().unwrap();
-    // println!("{:?}", s);
-    // let res = find_and_replace_N(user_macro.body, 4);
-    // println!("here is the body: {:#?}", user_macro.body);
-    let mut token_stream = TokenStream2::new();
 
+    let (token_stream, has_repetition) = find_and_replace_repetition(user_macro.body.clone(), s, e);
+
+    if has_repetition == true {
+        return token_stream.into();
+    }
+
+    let mut token_stream = TokenStream2::new();
     for i in s..e {
         let processed_body = find_and_replace_n(user_macro.body.clone(), i);
-        // println!("Iteration {}: {}", i, processed_body);
+
         token_stream.extend(processed_body);
     }
-    // println!("here is the output: {:?}", token_stream);
-    // println!("here is the body: {:#?}", user_macro.body);
+
     token_stream.into()
 }
-
-// seq!(N in 0..4 {
-//     compile_error!(concat!("error number ", stringify!(N)));
-// });

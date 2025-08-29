@@ -49,7 +49,7 @@ impl Parse for SeqMacroInput {
     }
 }
 
-fn find_and_replace_n(input: TokenStream2, n_value: u8) -> TokenStream2 {
+fn find_and_replace_n(input: TokenStream2, n_value: u16) -> TokenStream2 {
     let input: Vec<proc_macro2::TokenTree> = input.into_iter().collect();
     let mut token_stream = TokenStream2::new();
 
@@ -95,7 +95,7 @@ fn find_and_replace_n(input: TokenStream2, n_value: u8) -> TokenStream2 {
     token_stream
 }
 
-fn find_and_replace_repetition(input: TokenStream2, start: u8, end: u8) -> (TokenStream2, bool) {
+fn find_and_replace_repetition(input: TokenStream2, start: u16, end: u16) -> (TokenStream2, bool) {
     let input: Vec<proc_macro2::TokenTree> = input.into_iter().collect();
     let mut token_stream = TokenStream2::new();
 
@@ -134,8 +134,8 @@ fn find_and_replace_repetition(input: TokenStream2, start: u8, end: u8) -> (Toke
 pub fn seq(input: TokenStream) -> TokenStream {
     let user_macro = parse_macro_input!(input as SeqMacroInput);
 
-    let s: u8 = user_macro.range_start.base10_parse().unwrap();
-    let e: u8 = user_macro.range_end.base10_parse().unwrap();
+    let s: u16 = user_macro.range_start.base10_parse().unwrap();
+    let e: u16 = user_macro.range_end.base10_parse().unwrap();
 
     let (token_stream, has_repetition) = find_and_replace_repetition(user_macro.body.clone(), s, e);
 
